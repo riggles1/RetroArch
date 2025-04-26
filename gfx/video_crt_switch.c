@@ -294,10 +294,14 @@ static void switch_res_crt(
 {
    int w                   = native_width;
    int h                   = height;
+   bool fallback_attempted = false;
+   int original_h = h; /* Save the original height */
+   
+retry_switchres:
 
    /* Check if SR2 is loaded, if not, load it */
    if (crt_sr2_init(p_switch, monitor_index, crt_mode, super_width))
-   {
+    {
       int ret;
       int flags = 0;
       char current_core_name[NAME_MAX_LENGTH];
@@ -317,7 +321,7 @@ static void switch_res_crt(
 
       if (     !string_is_equal(core_name,   current_core_name)
             || !string_is_equal(content_dir, current_content_dir))
-      {
+        {
          /* A core or content change was detected,
             we update the current values and make adjustments */
          strlcpy(core_name,   current_core_name,   sizeof(core_name));
@@ -325,26 +329,54 @@ static void switch_res_crt(
          RARCH_LOG("[CRT]: Current running core %s \n", core_name);
          crt_adjust_sr_ini(p_switch);
          p_switch->hh_core = false;
-      }
+        }
 
       if (p_switch->rotated)
          flags |= SR_MODE_ROTATED;
 
-      RARCH_DBG("%dx%d rotation: %d rotated: %d core rotation:%d\n", w, h, p_switch->rotated, flags & SR_MODE_ROTATED, retroarch_get_rotation());
-      ret = sr_add_mode(w, h, rr, flags, &srm);
+      RARCH_DBG("%dx%d rotation: %d rotated: %d core rotation:%d\n", w, h, p_switch->rotated, flags & SR_MODE_ROTATED, retroarch_get_rotation()); 
+	  ret = sr_add_mode(w, h, rr, flags, &srm);
       if (!ret)
-         RARCH_ERR("[CRT]: SR failed to add mode\n");
+	    {
+         RARCH_ERR("[CRT]: SR failed to add mode for %dx%d\n", w, h);
+
+		 if (!fallback_attempted && original_h == 480)
+         {
+            fallback_attempted = true;
+            w = 2560;
+            h = 480;
+            rr = 60.0; /* fallback refresh rate */
+            RARCH_WARN("[CRT]: Falling back to 2560x480@60Hz because 480p mode failed\n");
+            goto retry_switchres;
+         }		  
+	    }
+	  
       if (p_switch->kms_ctx)
-      {
+        {
          get_modeline_for_kms(p_switch, &srm);
          video_driver_set_video_mode(srm.width, srm.height, true);
-      }
+        }
       else if (p_switch->khr_ctx)
+        {
          RARCH_WARN("[CRT]: Vulkan -> Can't modeswitch for now\n");
+        }
       else
+        {
          ret = sr_set_mode(srm.id);
+         if (!ret && !fallback_attempted && original_h == 480)
+         {
+            fallback_attempted = true;
+            w = 2560;
+            h = 480;
+            rr = 60.0;
+            RARCH_WARN("[CRT]: sr_set_mode failed, falling back to 2560x480@60Hz\n");
+            goto retry_switchres;
+         }
+        }
+
       if (!p_switch->kms_ctx && !ret)
          RARCH_ERR("[CRT]: SR failed to switch mode\n");
+
       p_switch->sr_core_hz = (float)srm.vfreq;
 
       crt_switch_set_aspect(p_switch,
@@ -354,7 +386,7 @@ static void switch_res_crt(
             (float)srm.x_scale,
             (float)srm.y_scale,
             srm.is_stretched);
-   }
+    }
    else
    {
       crt_switch_set_aspect(p_switch,
